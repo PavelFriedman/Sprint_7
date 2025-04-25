@@ -1,35 +1,72 @@
-# conftest.py
 import pytest
 import requests
-from helpers import create_random_login, create_random_password, create_random_firstname
-from urls import Urls
+import random
+import string
+import data
+from helper import Helper
+from scooter_api import ScooterApi
 
-@pytest.fixture
-def created_courier():
-    """
-    Фикстура:
-    - генерирует уникальные данные курьера
-    - создаёт курьера (POST /courier) и проверяет 201 + {'ok': True}
-    - отдаёт в тест payload и тело ответа
-    - в teardown авторизуется, получает ID и удаляет курьера
-    """
-    # Генерация
+
+# метод регистрации нового курьера возвращает список из логина и пароля
+# если регистрация не удалась, возвращает пустой список
+@pytest.fixture # фикстура с созданием и удалением курьера
+def register_new_courier_and_return_login_password():
+    # метод генерирует строку, состоящую только из букв нижнего регистра, в качестве параметра передаём длину строки
+    def generate_random_string(length):
+        letters = string.ascii_lowercase
+        random_string = ''.join(random.choice(letters) for i in range(length))
+        return random_string
+
+    # создаём список, чтобы метод мог его вернуть
+    login_pass = []
+
+    # генерируем логин, пароль и имя курьера
+    login = generate_random_string(10)
+    password = generate_random_string(10)
+    first_name = generate_random_string(10)
+
+    # собираем тело запроса
     payload = {
-        'login': create_random_login(),
-        'password': create_random_password(),
-        'firstName': create_random_firstname()
+        "login": login,
+        "password": password,
+        "firstName": first_name
     }
-    # Setup: создание
-    create_resp = requests.post(Urls.URL_courier_create, data=payload, timeout=5)
-    assert create_resp.status_code == 201, f"Setup failed: expected 201, got {create_resp.status_code}"
-    assert create_resp.json() == {'ok': True}, f"Setup failed: unexpected body {create_resp.json()}"
 
-    yield payload, create_resp.json()
+    # отправляем запрос на регистрацию курьера и сохраняем ответ в переменную response
+    response = requests.post('https://qa-scooter.praktikum-services.ru/api/v1/courier', data=payload)
 
-    # Teardown: удаляем курьера по ID
-    login_resp = requests.post(Urls.URL_courier_login, data=payload, timeout=5)
-    if login_resp.status_code == 200:
-        courier_id = login_resp.json().get('id')
-        if courier_id:
-            delete_url = f"{Urls.URL_basic}api/v1/courier/{courier_id}"
-            requests.delete(delete_url, timeout=5)
+    # если регистрация прошла успешно (код ответа 201), добавляем в список логин и пароль курьера
+    if response.status_code == 201:
+        login_pass.append(login)
+        login_pass.append(password)
+        login_pass.append(first_name)
+
+    # возвращаем список
+    yield login_pass
+
+    # удаление созданного курьера
+    response =  ScooterApi.login_courier(payload)
+    id_courier = str(response.json()['id'])
+    ScooterApi.delete_courier(id_courier)
+
+
+@pytest.fixture # создание кредов для курьера и удаления курьера по этим данным
+def manage_courier_credentials():
+    payload = Helper.credentials()
+    yield payload # вернули креды в тест
+    # удаление курьера со созданным
+    response = ScooterApi.login_courier(payload) # логинимся под курьером из теста
+    if response.status_code == 200:
+        id_courier = str(response.json()['id']) # тащим его id из респонса
+        ScooterApi.delete_courier(id_courier) # удаляем по id
+
+
+@pytest.fixture # возвращает данные для создания заказа и отменяет заказ после теста
+def create_data_and_cancel_order():
+    data_order = data.BLACK_AND_GRAY # данные заказа
+    track_container = {}  # Контейнер для хранения track заказа
+
+    yield data_order, track_container
+
+    if "track" in track_container:
+        ScooterApi.cancel_order(track_container)
